@@ -108,7 +108,7 @@ async def root():
     <body>
         <h1>תמלול אודיו בעברית</h1>
         <form id="uploadForm">
-            <label for="file">בחר קובץ אודיו (WAV, MP3):</label>
+            <label for="file">בחר קובץ אודיו (WAV, MP3, M4A):</label>
             <input type="file" id="file" name="file" accept=".wav,.mp3,.m4a" required>
             <button type="submit">התחל תמלול</button>
         </form>

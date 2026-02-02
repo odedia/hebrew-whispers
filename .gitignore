@@ -21,3 +21,5 @@ dist/
 # Project Specific
 models/
 *.log
+*.tar
+
