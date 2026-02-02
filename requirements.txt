@@ -1,0 +1,21 @@
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart
+jinja2
+boto3
+minio
+huggingface-hub
+# WhisperX and Core ML
+whisperx==3.1.1
+faster-whisper
+ctranslate2==3.24.0
+torch==2.1.2
+torchaudio==2.1.2
+# Audio processing
+ffmpeg-python
+soundfile
+pydub
+# Utilities
+watchdog
+requests
+numpy<2
