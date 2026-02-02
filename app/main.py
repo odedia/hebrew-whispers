@@ -1,5 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+import json
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import shutil
@@ -47,7 +48,7 @@ def process_transcription(job_id: str, file_path: str):
             os.remove(file_path)
 
 @app.post("/transcribe")
-async def transcribe_audio(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def transcribe_audio(background_tasks: BackgroundTasks, file: UploadFile = File(...), diarize: bool = Form(True)):
     if not file.filename.endswith(('.wav', '.mp3', '.m4a')):
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a WAV, MP3, or M4A file.")
 
@@ -58,10 +59,34 @@ async def transcribe_audio(background_tasks: BackgroundTasks, file: UploadFile =
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
-        jobs[job_id] = {'status': 'pending'}
-        background_tasks.add_task(process_transcription, job_id, file_path)
-        
-        return JSONResponse(content={"status": "queued", "job_id": job_id})
+        if diarize:
+            jobs[job_id] = {'status': 'pending'}
+            background_tasks.add_task(process_transcription, job_id, file_path)
+            
+            return JSONResponse(content={"status": "queued", "job_id": job_id})
+        else:
+            # Streaming mode
+            def stream_generator():
+                try:
+                    for segment in transcription_service.transcribe_stream(file_path):
+                        # segment is a Segment object (named tuple-like) from faster_whisper
+                        # We yield it as a JSON line
+                        data = {
+                            "start": segment.start,
+                            "end": segment.end,
+                            "text": segment.text
+                        }
+                        yield json.dumps(data, ensure_ascii=False) + "\n"
+                except Exception as e:
+                    import traceback
+                    print(traceback.format_exc())
+                    yield json.dumps({"error": str(e)}) + "\n"
+                finally:
+                    # Cleanup after stream ends
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+
+            return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 
     except Exception as e:
         if os.path.exists(file_path):
@@ -103,6 +128,21 @@ async def root():
                 0% { transform: rotate(0deg); }
                 100% { transform: rotate(360deg); }
             }
+            .loading-dots {
+                display: inline-block;
+                width: 50px;
+                text-align: left;
+            }
+            .loading-dots:after {
+                content: '.';
+                animation: dots 1.5s steps(5, end) infinite;
+            }
+            @keyframes dots {
+                0%, 20% { content: '.'; }
+                40% { content: '..'; }
+                60% { content: '...'; }
+                80%, 100% { content: ''; }
+            }
         </style>
     </head>
     <body>
@@ -110,6 +150,15 @@ async def root():
         <form id="uploadForm">
             <label for="file">בחר קובץ אודיו (WAV, MP3, M4A):</label>
             <input type="file" id="file" name="file" accept=".wav,.mp3,.m4a" required>
+            
+            <div style="margin: 10px 0;">
+                <label>
+                    <input type="checkbox" id="diarize" name="diarize">
+                    זיהוי דוברים (זמן עיבוד ארוך יותר)
+                    <span style="color: red; font-size: 0.9em;">(עלול לגרום לשגיאת זיכרון)</span>
+                </label>
+            </div>
+
             <button type="submit">התחל תמלול</button>
         </form>
         <div id="spinner" class="spinner"></div>
@@ -119,6 +168,10 @@ async def root():
             document.getElementById('uploadForm').onsubmit = async (e) => {
                 e.preventDefault();
                 const formData = new FormData(e.target);
+                const diarize = document.getElementById('diarize').checked;
+                // Add explicit bool, although checkbox in FormData sends 'on' if checked
+                formData.set('diarize', diarize); 
+
                 const resultDiv = document.getElementById('result');
                 const spinner = document.getElementById('spinner');
                 const statusDiv = document.getElementById('status');
@@ -134,16 +187,76 @@ async def root():
                         method: 'POST',
                         body: formData
                     });
-                    const data = await response.json();
-                    
-                    if (data.status === 'queued') {
-                        const jobId = data.job_id;
-                        statusDiv.textContent = 'הקובץ התקבל. מתחיל עיבוד...';
-                        pollJob(jobId);
+
+                    if (diarize) {
+                        const data = await response.json();
+                        
+                        if (data.status === 'queued') {
+                            const jobId = data.job_id;
+                            statusDiv.textContent = 'הקובץ התקבל. מתחיל עיבוד...';
+                            pollJob(jobId);
+                        } else {
+                            spinner.style.display = 'none';
+                            statusDiv.style.display = 'none';
+                            resultDiv.innerHTML = `<p style="color:red">שגיאה: ${data.detail}</p>`;
+                        }
                     } else {
+                        // Handle Streaming Response
+                        statusDiv.textContent = 'מעבד... (סטרימינג)';
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder("utf-8");
+                        let html = '<h2>תוצאה (ללא זיהוי דוברים):</h2>';
+                        resultDiv.innerHTML = html;
+                        
+                        // Create and append loader
+                        const loader = document.createElement('div');
+                        loader.className = 'loading-dots';
+                        resultDiv.appendChild(loader);
+
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            
+                            const chunk = decoder.decode(value, { stream: true });
+                            // Split by newlines as we send NDJSON
+                            const lines = chunk.split('\\n');
+                            
+                            // Remove loader temporarily to append text, or just append text before it?
+                            // Easier to remove and re-append at the end of the loop
+                            loader.remove();
+
+                            for (const line of lines) {
+                                if (!line.trim()) continue;
+                                try {
+                                    const seg = JSON.parse(line);
+                                    if (seg.error) {
+                                        html += `<p style="color:red">Error: ${seg.error}</p>`;
+                                        // Update HTML string, but also DOM
+                                        const p = document.createElement('p');
+                                        p.style.color = 'red';
+                                        p.textContent = `Error: ${seg.error}`;
+                                        resultDiv.appendChild(p);
+                                    } else {
+                                        // Update UI immediately
+                                        const p = document.createElement('p');
+                                        p.innerHTML = `<strong>[${seg.start.toFixed(1)}-${seg.end.toFixed(1)}]:</strong> ${seg.text}`;
+                                        resultDiv.appendChild(p);
+                                    }
+                                } catch (e) {
+                                    console.error("Error parsing chunk", e);
+                                }
+                            }
+                            // Re-append loader at bottom
+                            resultDiv.appendChild(loader);
+                            // Scroll to bottom
+                            window.scrollTo(0, document.body.scrollHeight);
+                        }
+                        
+                        // Final cleanup
+                        loader.remove();
+                        
                         spinner.style.display = 'none';
                         statusDiv.style.display = 'none';
-                        resultDiv.innerHTML = `<p style="color:red">שגיאה: ${data.detail}</p>`;
                     }
                 } catch (err) {
                     spinner.style.display = 'none';

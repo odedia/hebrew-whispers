@@ -108,9 +108,25 @@ class TranscriptionService:
             logger.info("Loading WhisperX model...")
             whisper_model_path = os.path.join(self.models_dir, "faster-whisper", "large-v3")
             
-            if not os.path.exists(whisper_model_path):
-                 logger.error(f"Whisper model path not found: {whisper_model_path}")
-                 raise FileNotFoundError(f"Whisper model not found at {whisper_model_path}")
+            # Robustly find model directory
+            search_path = os.path.join(self.models_dir, "faster-whisper", "large-v3")
+            if not os.path.exists(search_path):
+                # Try finding it in subdirectories (common with snapshot_download)
+                 # fast-whisper/large-v3/Systran/faster-whisper-large-v3
+                 possible_paths = glob.glob(os.path.join(self.models_dir, "faster-whisper", "*", "*", "model.bin"))
+                 if not possible_paths:
+                      # Try depth 1
+                      possible_paths = glob.glob(os.path.join(self.models_dir, "faster-whisper", "*", "model.bin"))
+                 
+                 if possible_paths:
+                      # path is .../model.bin, we need the parent dir
+                      whisper_model_path = os.path.dirname(possible_paths[0])
+                      logger.info(f"Found Whisper model at alternative path: {whisper_model_path}")
+                 else:
+                      logger.error(f"Whisper model path not found at {search_path} or subdirectories")
+                      raise FileNotFoundError(f"Whisper model not found")
+            else:
+                 whisper_model_path = search_path
 
             # MONKEYPATCH: Override whisperx.vad.load_vad_model to use local path
             # Find the local VAD directory in models/torch_hub
@@ -280,3 +296,40 @@ class TranscriptionService:
                  logger.error(f"Diarization failed: {e}")
 
         return result
+
+    def transcribe_stream(self, audio_path: str):
+        """
+        Generator function that yields transcription segments in real-time.
+        Bypasses whisperx batching and VAD to use the underlying faster-whisper stream.
+        """
+        if not self.model:
+            raise RuntimeError("Whisper model not initialized")
+
+        # Access the underlying faster-whisper model
+        # whisperx.ASRPipeline.model is the FasterWhisperPipeline
+        # FasterWhisperPipeline.model is the actual faster_whisper.WhisperModel
+        
+        # We need to check the structure based on whisperx version
+        # In current whisperx, self.model is an ASRPipeline
+        faster_whisper_pipeline = self.model
+        
+        # We can use the transcribe method of the internal model if accessible, 
+        # or use the faster-whisper logic directly.
+        # However, ASRPipeline.transcribe() is distinct.
+        # The 'model' attribute of ASRPipeline is the faster_whisper.WhisperModel instance.
+        
+        logger.info(f"Streaming transcription for {audio_path}...")
+        
+        # faster_whisper.WhisperModel.transcribe returns (segments, info)
+        # segments is a generator
+        segments, info = faster_whisper_pipeline.model.transcribe(
+            audio_path, 
+            language="he",
+            task="transcribe"
+        )
+        
+        for segment in segments:
+            logger.info(f"Stream yielded segment: {segment.start:.2f}-{segment.end:.2f} '{segment.text}'")
+            # Yield a JSON string for SSE
+            yield segment
+

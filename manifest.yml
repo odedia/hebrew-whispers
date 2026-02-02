@@ -7,6 +7,6 @@ applications:
   timeout: 600
   command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
   docker:
-    image: <YOUR_REGISTRY>/whisper-app:v1
+    image: odedshopen510/whisper-app:v1
   env:
     MODELS_PATH: /app/models
