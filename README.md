@@ -28,14 +28,15 @@ A production-ready, Dockerized web application for high-accuracy Hebrew audio tr
 Since the environment is air-gapped, you must download models on a connected machine first.
 
 ```bash
-# Install dependencies for the downloader
-pip install huggingface_hub faster-whisper torch whisperx
-
-# Download all models to ./models directory
 # Export HF_TOKEN if you have access to gated Pyannote models (optional but recommended for Diarization)
 export HF_TOKEN=your_token
-python download_models.py
+
+# Run the helper script (uses Docker to download models, keeping your local env clean)
+chmod +x download_models_docker.sh
+./download_models_docker.sh
 ```
+
+*Alternatively, you can install dependencies `pip install huggingface_hub faster-whisper torch whisperx` and run `python download_models.py` manually.*
 
 ### 2. Build Docker Image
 **Note for Mac Users (M1/M2/M3):** You must build for `linux/amd64` to run on most servers/Tanzu.
