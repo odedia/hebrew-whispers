@@ -1,0 +1,70 @@
+# CUDA-enabled Dockerfile for WhisperX
+# Build with: docker build -f Dockerfile.cuda -t whisperx-cuda .
+# Run with:   docker run --gpus all -p 8080:8080 whisperx-cuda
+
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python and system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-venv \
+    python3-pip \
+    ffmpeg \
+    git \
+    libsndfile1 \
+    pkg-config \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavfilter-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
+    update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+# Create a non-root user (Tanzu security requirement)
+RUN useradd -m -u 1000 appuser
+
+WORKDIR /app
+
+# Copy requirements first to leverage docker cache
+COPY --chown=appuser:appuser requirements.txt .
+
+# Pre-install Cython<3.0 to avoid build errors with PyAV
+# Install PyTorch with CUDA 11.8 support from the PyTorch index
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir "Cython<3.0" && \
+    pip install --no-cache-dir torch==2.1.2+cu118 torchaudio==2.1.2+cu118 --index-url https://download.pytorch.org/whl/cu118 && \
+    pip install --no-cache-dir -r requirements.txt --no-build-isolation
+
+# Create models directory with correct ownership
+RUN mkdir -p /app/models && chown appuser:appuser /app/models
+
+# Copy models with ownership - This PREVENTS layer duplication compared to running chown -R later
+# We copy models BEFORE app code so that code changes (frequent) don't invalidate the model layer (rare)
+COPY --chown=appuser:appuser models /app/models
+
+# Copy the rest of the application with ownership
+COPY --chown=appuser:appuser app /app/app
+COPY --chown=appuser:appuser download_models.py .
+
+# Switch to non-root user
+USER appuser
+
+# Set environment variable to help libraries find CUDA
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+
+# Expose port
+EXPOSE 8080
+
+# Command to run the application
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

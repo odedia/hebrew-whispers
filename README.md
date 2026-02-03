@@ -51,6 +51,29 @@ docker push your-registry/hebrew-whispers:v1
 
 **Optimization:** The `Dockerfile` is layered so that the heavy `models/` directory (6GB+) is cached before the application code. Code changes will result in fast 10MB pushes, not 6GB pushes.
 
+### 2b. Build with CUDA/GPU Support (Optional)
+For significantly faster transcription on machines with NVIDIA GPUs, use the CUDA-enabled Dockerfile:
+
+```bash
+# Build CUDA image for deployment (x86_64)
+docker buildx build --platform linux/amd64 -f Dockerfile.cuda -t your-registry/hebrew-whispers:v1-cuda --load .
+
+# Push to your registry
+docker push your-registry/hebrew-whispers:v1-cuda
+```
+
+**Host Requirements:**
+- NVIDIA GPU with CUDA support
+- NVIDIA Driver (525+)
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (`nvidia-docker2`)
+
+**Running with GPU:**
+```bash
+docker run --gpus all -p 8080:8080 your-registry/hebrew-whispers:v1-cuda
+```
+
+The application auto-detects CUDA availability and will use GPU acceleration with `float16` precision when available, falling back to CPU with `int8` precision otherwise.
+
 ### 3. Deploy
 Deploy to your platform (e.g., Cloud Foundry / Tanzu):
 
